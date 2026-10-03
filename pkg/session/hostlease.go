@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 )
 
 var (
@@ -79,27 +79,46 @@ func TryAcquireHostLease(baseURL, clientName string) (*HostLease, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+
+	const attempts = 2
+	for i := 0; i < attempts; i++ {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			payload := fmt.Sprintf("%s=%d\n", clientName, os.Getpid())
+			if _, err := f.WriteString(payload); err != nil {
+				_ = f.Close()
+				_ = os.Remove(path)
+				return nil, err
+			}
+			return &HostLease{path: path, file: f, client: clientName}, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		holder, pid := readLeaseRecord(path)
+		if pid > 0 && processAlive(pid) {
+			return nil, &LocalSessionHeldError{Holder: holder}
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return nil, &LocalSessionHeldError{Holder: readLeaseHolder(path)}
+}
+
+func readLeaseRecord(path string) (holder string, pid int) {
+	holder = readLeaseHolder(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return holder, 0
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		holder := readLeaseHolder(path)
-		return nil, &LocalSessionHeldError{Holder: holder}
+	line := strings.TrimSpace(string(data))
+	if i := strings.LastIndexByte(line, '='); i > 0 {
+		if p, err := strconv.Atoi(strings.TrimSpace(line[i+1:])); err == nil {
+			pid = p
+		}
 	}
-	payload := fmt.Sprintf("%s=%d\n", clientName, os.Getpid())
-	if err := f.Truncate(0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, err
-	}
-	if _, err := f.WriteAt([]byte(payload), 0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, err
-	}
-	return &HostLease{path: path, file: f, client: clientName}, nil
+	return holder, pid
 }
 
 func readLeaseHolder(path string) string {
@@ -122,11 +141,14 @@ func (h *HostLease) Release() error {
 	if h == nil || h.file == nil {
 		return nil
 	}
-	errUnlock := syscall.Flock(int(h.file.Fd()), syscall.LOCK_UN)
 	errClose := h.file.Close()
 	h.file = nil
-	if errUnlock != nil {
-		return errUnlock
+	errRemove := os.Remove(h.path)
+	if errClose != nil {
+		return errClose
 	}
-	return errClose
+	if errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+		return errRemove
+	}
+	return nil
 }
