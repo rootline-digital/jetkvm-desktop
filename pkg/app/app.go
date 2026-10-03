@@ -3748,6 +3748,9 @@ func (a *App) drawOverlay(screen *ebiten.Image, snap session.Snapshot, hasVideo 
 	case session.PhaseOtherSession:
 		title = "Session Replaced"
 		detail = "Another client took over the device"
+	case session.PhaseLocalSessionBlocked:
+		title = "Session In Use Locally"
+		detail = snap.Status
 	case session.PhaseRebooting:
 		title = "Rebooting"
 		detail = "Waiting for the device to come back"
@@ -3772,8 +3775,8 @@ func (a *App) drawOverlay(screen *ebiten.Image, snap session.Snapshot, hasVideo 
 	a.drawUIRoot(screen, &a.overlayRuntime, func(chromeButton) {}, overlayBannerRootElement{
 		title:      title,
 		detail:     detail,
-		takeover:   snap.Phase == session.PhaseOtherSession,
-		withButton: snap.Phase == session.PhaseOtherSession,
+		takeover:   snap.Phase == session.PhaseOtherSession || snap.Phase == session.PhaseLocalSessionBlocked,
+		withButton: snap.Phase == session.PhaseOtherSession || snap.Phase == session.PhaseLocalSessionBlocked,
 		width:      min(420, float64(screen.Bounds().Dx()-52)),
 		onClick: func() {
 			a.releaseAllKeys(true)
@@ -4088,10 +4091,11 @@ func (a *App) connectTo(target string) {
 	a.stats = client.StatsSnapshot{}
 	a.statsHistory = nil
 	a.ctrl = session.New(session.Config{
-		BaseURL:    baseURL,
-		Password:   password,
-		RPCTimeout: a.cfg.RPCTimeout,
-		Reconnect:  true,
+		BaseURL:            baseURL,
+		Password:           password,
+		RPCTimeout:         a.cfg.RPCTimeout,
+		Reconnect:          true,
+		LocalSessionClient: "jetkvm-desktop",
 	})
 	if a.ctx != nil {
 		a.ctrl.Start(a.ctx)

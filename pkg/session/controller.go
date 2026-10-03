@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -34,6 +35,7 @@ const (
 	PhaseDisconnected              // disconnected
 	PhaseAuthFailed                // auth_failed
 	PhaseOtherSession              // other_session
+	PhaseLocalSessionBlocked       // local_session_blocked
 	PhaseRebooting                 // rebooting
 	PhaseFatal                     // fatal_error
 )
@@ -46,6 +48,9 @@ type Config struct {
 	Reconnect       bool
 	ReconnectBase   time.Duration
 	ReconnectMax    time.Duration
+	// LocalSessionClient enables a host-scoped flock so jetkvm-desktop and
+	// jetkvm-mcp on the same machine do not fight for the single WebRTC slot.
+	LocalSessionClient string
 }
 
 type Snapshot struct {
@@ -86,6 +91,8 @@ type Controller struct {
 	runParent context.Context
 	cancelRun context.CancelFunc
 	running   bool
+	hostLease *HostLease
+	skipLocalLease atomic.Bool
 }
 
 const (
@@ -210,6 +217,7 @@ func (c *Controller) Stop() {
 		_ = c.current.Close()
 		c.current = nil
 	}
+	c.releaseHostLeaseLocked()
 	c.mu.Unlock()
 }
 
@@ -240,6 +248,7 @@ func (c *Controller) LatestFrameInfo() (image.Image, time.Time) {
 }
 
 func (c *Controller) ReconnectNow() {
+	c.skipLocalLease.Store(true)
 	c.mu.Lock()
 	current := c.current
 	parent := c.runParent
@@ -1853,10 +1862,32 @@ func (c *Controller) Stats() client.StatsSnapshot {
 
 func (c *Controller) run(ctx context.Context) {
 	defer func() {
+		c.releaseHostLease()
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
 	}()
+
+	if c.cfg.LocalSessionClient != "" {
+		if c.skipLocalLease.Load() {
+			c.skipLocalLease.Store(false)
+		} else if err := c.acquireHostLease(); err != nil {
+			var held *LocalSessionHeldError
+			status := err.Error()
+			if errors.As(err, &held) && held.Holder != "" {
+				status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
+			}
+			c.setState(func(s *Snapshot) {
+				s.Phase = PhaseLocalSessionBlocked
+				s.Status = status
+				s.LastError = err.Error()
+				s.HIDReady = false
+				s.VideoReady = false
+			})
+			return
+		}
+	}
+
 	var attempt int
 	for {
 		select {
@@ -1915,6 +1946,7 @@ func (c *Controller) run(ctx context.Context) {
 		}
 
 		_ = c.bootstrap(ctx, cl)
+		c.adoptHostLeaseAfterConnect()
 		reason, stop := c.watch(ctx, cl)
 		if stop {
 			return
@@ -1922,6 +1954,7 @@ func (c *Controller) run(ctx context.Context) {
 
 		switch reason {
 		case "other_session":
+			c.releaseHostLease()
 			c.setState(func(s *Snapshot) {
 				s.Phase = PhaseOtherSession
 				s.Status = "another session took over"
@@ -2232,6 +2265,40 @@ func (c *Controller) mutateAndConfirm(mutate func(context.Context) error, confir
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *Controller) acquireHostLease() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hostLease != nil {
+		return nil
+	}
+	lease, err := TryAcquireHostLease(c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	if err != nil {
+		return err
+	}
+	c.hostLease = lease
+	return nil
+}
+
+func (c *Controller) adoptHostLeaseAfterConnect() {
+	if c.cfg.LocalSessionClient == "" {
+		return
+	}
+	_ = c.acquireHostLease()
+}
+
+func (c *Controller) releaseHostLeaseLocked() {
+	if c.hostLease != nil {
+		_ = c.hostLease.Release()
+		c.hostLease = nil
+	}
+}
+
+func (c *Controller) releaseHostLease() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.releaseHostLeaseLocked()
 }
 
 func backoff(attempt int, base, max time.Duration) time.Duration {

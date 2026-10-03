@@ -64,10 +64,11 @@ func main() {
 
 			return mcpserver.Run(ctx, mcpserver.Options{
 				Session: session.Config{
-					BaseURL:    host,
-					Password:   password,
-					RPCTimeout: rpcTimeout,
-					Reconnect:  true,
+					BaseURL:            host,
+					Password:           password,
+					RPCTimeout:         rpcTimeout,
+					Reconnect:          true,
+					LocalSessionClient: "jetkvm-mcp",
 				},
 				ToolTimeout:    toolTimeout,
 				ConnectTimeout: connectTimeout,

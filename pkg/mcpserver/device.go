@@ -72,7 +72,7 @@ func (h *sessionHolder) waitConnected(ctx context.Context) (*session.Controller,
 		switch snap.Phase {
 		case session.PhaseConnected:
 			return ctrl, nil
-		case session.PhaseAuthFailed, session.PhaseFatal:
+		case session.PhaseAuthFailed, session.PhaseFatal, session.PhaseLocalSessionBlocked:
 			return nil, fmt.Errorf("jetkvm session %s", snap.Phase)
 		}
 		if time.Now().After(deadline) {

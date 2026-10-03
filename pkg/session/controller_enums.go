@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-const _PhaseName = "idleconnectingconnectedreconnectingdisconnectedauth_failedother_sessionrebootingfatal_error"
+const _PhaseName = "idleconnectingconnectedreconnectingdisconnectedauth_failedother_sessionlocal_session_blockedrebootingfatal_error"
 
-var _PhaseIndex = [...]uint8{0, 4, 14, 23, 35, 47, 58, 71, 80, 91}
+var _PhaseIndex = [...]uint8{0, 4, 14, 23, 35, 47, 58, 71, 92, 101, 112}
 
-const _PhaseLowerName = "idleconnectingconnectedreconnectingdisconnectedauth_failedother_sessionrebootingfatal_error"
+const _PhaseLowerName = "idleconnectingconnectedreconnectingdisconnectedauth_failedother_sessionlocal_session_blockedrebootingfatal_error"
 
 func (i Phase) String() string {
 	if i >= Phase(len(_PhaseIndex)-1) {
@@ -31,11 +31,12 @@ func _PhaseNoOp() {
 	_ = x[PhaseDisconnected-(4)]
 	_ = x[PhaseAuthFailed-(5)]
 	_ = x[PhaseOtherSession-(6)]
-	_ = x[PhaseRebooting-(7)]
-	_ = x[PhaseFatal-(8)]
+	_ = x[PhaseLocalSessionBlocked-(7)]
+	_ = x[PhaseRebooting-(8)]
+	_ = x[PhaseFatal-(9)]
 }
 
-var _PhaseValues = []Phase{PhaseIdle, PhaseConnecting, PhaseConnected, PhaseReconnecting, PhaseDisconnected, PhaseAuthFailed, PhaseOtherSession, PhaseRebooting, PhaseFatal}
+var _PhaseValues = []Phase{PhaseIdle, PhaseConnecting, PhaseConnected, PhaseReconnecting, PhaseDisconnected, PhaseAuthFailed, PhaseOtherSession, PhaseLocalSessionBlocked, PhaseRebooting, PhaseFatal}
 
 var _PhaseNameToValueMap = map[string]Phase{
 	_PhaseName[0:4]:        PhaseIdle,
@@ -52,10 +53,12 @@ var _PhaseNameToValueMap = map[string]Phase{
 	_PhaseLowerName[47:58]: PhaseAuthFailed,
 	_PhaseName[58:71]:      PhaseOtherSession,
 	_PhaseLowerName[58:71]: PhaseOtherSession,
-	_PhaseName[71:80]:      PhaseRebooting,
-	_PhaseLowerName[71:80]: PhaseRebooting,
-	_PhaseName[80:91]:      PhaseFatal,
-	_PhaseLowerName[80:91]: PhaseFatal,
+	_PhaseName[71:92]:      PhaseLocalSessionBlocked,
+	_PhaseLowerName[71:92]: PhaseLocalSessionBlocked,
+	_PhaseName[92:101]:     PhaseRebooting,
+	_PhaseLowerName[92:101]: PhaseRebooting,
+	_PhaseName[101:112]:    PhaseFatal,
+	_PhaseLowerName[101:112]: PhaseFatal,
 }
 
 var _PhaseNames = []string{
@@ -66,8 +69,9 @@ var _PhaseNames = []string{
 	_PhaseName[35:47],
 	_PhaseName[47:58],
 	_PhaseName[58:71],
-	_PhaseName[71:80],
-	_PhaseName[80:91],
+	_PhaseName[71:92],
+	_PhaseName[92:101],
+	_PhaseName[101:112],
 }
 
 // PhaseString retrieves an enum value from the enum constants string name.

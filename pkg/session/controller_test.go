@@ -64,6 +64,41 @@ func TestControllerReconnectsAfterDisconnect(t *testing.T) {
 	waitForPhase(t, controller, PhaseConnected, 5*time.Second)
 }
 
+func TestControllerRefusesSecondLocalSession(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	dir := t.TempDir()
+	lockDirOverride = dir
+	t.Cleanup(func() { lockDirOverride = "" })
+
+	first := New(Config{
+		BaseURL:            srv.BaseURL(),
+		Password:           "secret",
+		RPCTimeout:         2 * time.Second,
+		Reconnect:          true,
+		LocalSessionClient: "jetkvm-mcp",
+	})
+	second := New(Config{
+		BaseURL:            srv.BaseURL(),
+		Password:           "secret",
+		RPCTimeout:         2 * time.Second,
+		Reconnect:          true,
+		LocalSessionClient: "jetkvm-desktop",
+	})
+	first.Start(ctx)
+	defer first.Stop()
+	waitForPhase(t, first, PhaseConnected, 5*time.Second)
+
+	second.Start(ctx)
+	defer second.Stop()
+	waitForPhase(t, second, PhaseLocalSessionBlocked, 2*time.Second)
+
+	if snap := first.Snapshot(); snap.Phase != PhaseConnected {
+		t.Fatalf("first session phase = %v, want connected", snap.Phase)
+	}
+}
+
 func TestControllerTransitionsToOtherSession(t *testing.T) {
 	srv, ctx, cancel := startEmulator(t)
 	defer cancel()
