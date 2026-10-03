@@ -89,7 +89,7 @@ func TryAcquireHostLease(baseURL, clientName string) (*HostLease, error) {
 		return nil, &LocalSessionHeldError{Holder: holder}
 	}
 	payload := fmt.Sprintf("%s=%d\n", clientName, os.Getpid())
-	if _, err := f.Truncate(0); err != nil {
+	if err := f.Truncate(0); err != nil {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 		return nil, err
