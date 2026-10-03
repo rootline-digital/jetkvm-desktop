@@ -471,6 +471,9 @@ func (h mediaHeaderElement) Draw(ctx *ui.Context, bounds ui.Rect) {
 	if h.app.mediaLoading {
 		rightChildren = append(rightChildren, ui.Fixed(ui.Label{Text: "Working…", Size: 12, Color: ctx.Theme.AccentText}), ui.Fixed(ui.Spacer{H: 10}))
 	}
+	if strings.TrimSpace(h.app.mediaError) != "" {
+		rightChildren = append(rightChildren, ui.Fixed(ui.Button{ID: "media_reset_wedged", Label: "Reset media", Enabled: !h.app.mediaUploading && !h.app.mediaLoading}))
+	}
 	rightChildren = append(rightChildren, ui.Fixed(ui.Button{ID: "media_close", Label: "X", Enabled: !h.app.mediaUploading}))
 	ui.Row{
 		Children: []ui.Child{

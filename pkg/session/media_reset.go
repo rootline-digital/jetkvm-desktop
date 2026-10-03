@@ -12,6 +12,38 @@ func isVirtualMediaRPCTimedOut(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
+func isVirtualMediaTransientTransport(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "closed pipe") ||
+		strings.Contains(msg, "rpc data channel not ready") ||
+		strings.Contains(msg, "client not connected")
+}
+
+func (c *Controller) waitForRPCReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		current := c.clientIfConnected()
+		if current == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := current.Ping(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if !isVirtualMediaRPCTimedOut(err) && !isVirtualMediaTransientTransport(err) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("rpc not ready after reconnect")
+}
+
 func isVirtualMediaMethodNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -68,8 +100,10 @@ func (c *Controller) recoverWedgedVirtualMedia() error {
 	if err := c.waitForPhase(PhaseConnected, 30*time.Second); err != nil {
 		return err
 	}
-	current = c.clientIfConnected()
-	if current != nil {
+	if err := c.waitForRPCReady(10 * time.Second); err != nil {
+		return err
+	}
+	if current := c.clientIfConnected(); current != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.MutationTimeout)
 		resetErr := current.ResetVirtualMedia(ctx)
 		cancel()
