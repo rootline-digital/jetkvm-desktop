@@ -165,6 +165,25 @@ func (a *App) invokeMediaAction(id string) bool {
 		a.mediaUploadFocused = true
 		a.mediaURLFocused = false
 		return true
+	case id == "media_reset_wedged":
+		if a.mediaUploading || a.ctrl == nil {
+			return true
+		}
+		a.mediaLoading = true
+		a.mediaError = ""
+		a.runAsync(func() {
+			err := a.ctrl.ResetVirtualMedia()
+			if err == nil {
+				err = a.reloadMediaData()
+			}
+			a.mu.Lock()
+			a.mediaLoading = false
+			if err != nil {
+				a.mediaError = err.Error()
+			}
+			a.mu.Unlock()
+		})
+		return true
 	case id == "media_unmount":
 		if a.mediaUploading || a.ctrl == nil || a.mediaState == nil {
 			return true
@@ -512,6 +531,11 @@ func (e mediaStateElement) Draw(ctx *ui.Context, bounds ui.Rect) {
 							ui.Fixed(ui.Label{Text: humanBytes(e.app.mediaState.Size), Size: 12, Color: ctx.Theme.Muted}),
 						},
 					}, 1),
+					ui.Fixed(ui.Button{
+						ID:      "media_reset_wedged",
+						Label:   "Reset",
+						Enabled: !e.app.mediaLoading && !e.app.mediaUploading,
+					}),
 					ui.Fixed(ui.Button{
 						ID:      "media_unmount",
 						Label:   "Unmount",

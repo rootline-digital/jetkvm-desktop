@@ -1518,6 +1518,11 @@ func (s *session) handleRPC(data []byte) error {
 		state := s.serverRef.media
 		s.serverRef.mu.Unlock()
 		resp = jsonrpc.NewResponse(req.ID, state)
+	case "resetVirtualMedia":
+		s.serverRef.mu.Lock()
+		s.serverRef.media = nil
+		s.serverRef.mu.Unlock()
+		resp = jsonrpc.NewResponse(req.ID, true)
 	case "unmountImage":
 		s.serverRef.mu.Lock()
 		s.serverRef.media = nil
