@@ -99,6 +99,7 @@ jobs:
               "jetkvm-desktop-${tag}-macos-amd64.tar.gz"
               "jetkvm-desktop-${tag}-macos-aarch64.tar.gz"
               "jetkvm-desktop-${tag}-windows-amd64.zip"
+              "jetkvm-mcp"
               "SHA256SUMS.txt"
             )
 
@@ -183,7 +184,12 @@ jobs:
               exit 1
             fi
           done
-          (cd release && sha256sum "${expected_assets[@]}" >SHA256SUMS.txt)
+          # ROOT-3058: workstation MCP install path expects a jetkvm-mcp binary name.
+          tar -xzf "release/jetkvm-desktop-${RELEASE_TAG}-linux-amd64.tar.gz" \
+            -C release jetkvm-desktop
+          cp "release/jetkvm-desktop" "release/jetkvm-mcp"
+          chmod +x "release/jetkvm-mcp"
+          (cd release && sha256sum "${expected_assets[@]}" jetkvm-mcp >SHA256SUMS.txt)
 
           short_sha="$(git rev-parse --short=12 "$RELEASE_SHA")"
           built_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
