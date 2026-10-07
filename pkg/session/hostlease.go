@@ -11,10 +11,7 @@ import (
 	"strings"
 )
 
-var (
-	errLocalSessionHeld = errors.New("local WebRTC session already active")
-	lockDirOverride     = ""
-)
+var errLocalSessionHeld = errors.New("local WebRTC session already active")
 
 // LocalSessionHeldError is returned when another local client already holds the host lease.
 type LocalSessionHeldError struct {
@@ -40,9 +37,6 @@ type HostLease struct {
 }
 
 func localSessionLockDir() (string, error) {
-	if lockDirOverride != "" {
-		return lockDirOverride, nil
-	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
@@ -50,14 +44,10 @@ func localSessionLockDir() (string, error) {
 	return filepath.Join(base, "jetkvm-desktop", "webrtc-sessions"), nil
 }
 
-func hostLeasePath(baseURL string) (string, error) {
-	dir, err := localSessionLockDir()
-	if err != nil {
-		return "", err
-	}
+func hostLeasePath(dir, baseURL string) string {
 	key := sha256.Sum256([]byte(normalizeLeaseHost(baseURL)))
 	name := hex.EncodeToString(key[:8]) + ".lock"
-	return filepath.Join(dir, name), nil
+	return filepath.Join(dir, name)
 }
 
 func normalizeLeaseHost(baseURL string) string {
@@ -66,16 +56,25 @@ func normalizeLeaseHost(baseURL string) string {
 	return s
 }
 
-// TryAcquireHostLease takes an exclusive non-blocking lock for baseURL.
+// TryAcquireHostLease takes an exclusive non-blocking lock for baseURL,
+// using the per-user cache directory to serialize sessions on this machine.
 func TryAcquireHostLease(baseURL, clientName string) (*HostLease, error) {
+	dir, err := localSessionLockDir()
+	if err != nil {
+		return nil, err
+	}
+	return tryAcquireHostLease(dir, baseURL, clientName)
+}
+
+// tryAcquireHostLease is the directory-injectable core shared by
+// TryAcquireHostLease and the unit tests, which pass a temp dir so they do not
+// touch (or serialize against) the real per-user cache.
+func tryAcquireHostLease(dir, baseURL, clientName string) (*HostLease, error) {
 	clientName = strings.TrimSpace(clientName)
 	if clientName == "" {
 		return nil, errors.New("client name required for local session lease")
 	}
-	path, err := hostLeasePath(baseURL)
-	if err != nil {
-		return nil, err
-	}
+	path := hostLeasePath(dir, baseURL)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}

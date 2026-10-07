@@ -8,16 +8,14 @@ import (
 func TestHostLeaseRefusesSecondClient(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	lockDirOverride = dir
-	t.Cleanup(func() { lockDirOverride = "" })
 
-	first, err := TryAcquireHostLease("https://jetkvm-ms01.example", "jetkvm-mcp")
+	first, err := tryAcquireHostLease(dir, "https://jetkvm-ms01.example", "jetkvm-mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Release() })
 
-	_, err = TryAcquireHostLease("https://jetkvm-ms01.example", "jetkvm-desktop")
+	_, err = tryAcquireHostLease(dir, "https://jetkvm-ms01.example", "jetkvm-desktop")
 	if err == nil {
 		t.Fatal("expected second lease to fail")
 	}
@@ -33,16 +31,14 @@ func TestHostLeaseRefusesSecondClient(t *testing.T) {
 func TestHostLeaseDifferentHosts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	lockDirOverride = dir
-	t.Cleanup(func() { lockDirOverride = "" })
 
-	a, err := TryAcquireHostLease("host-a", "jetkvm-mcp")
+	a, err := tryAcquireHostLease(dir, "host-a", "jetkvm-mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Release() })
 
-	b, err := TryAcquireHostLease("host-b", "jetkvm-desktop")
+	b, err := tryAcquireHostLease(dir, "host-b", "jetkvm-desktop")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -51,6 +51,9 @@ type Config struct {
 	// LocalSessionClient enables a host-scoped flock so jetkvm-desktop and
 	// jetkvm-mcp on the same machine do not fight for the single WebRTC slot.
 	LocalSessionClient string
+	// LocalSessionLockDir overrides where that flock lives; empty uses the
+	// per-user cache dir. Intended for tests that must not touch real state.
+	LocalSessionLockDir string
 }
 
 type Snapshot struct {
@@ -2273,7 +2276,15 @@ func (c *Controller) acquireHostLease() error {
 	if c.hostLease != nil {
 		return nil
 	}
-	lease, err := TryAcquireHostLease(c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	var (
+		lease *HostLease
+		err   error
+	)
+	if dir := c.cfg.LocalSessionLockDir; dir != "" {
+		lease, err = tryAcquireHostLease(dir, c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	} else {
+		lease, err = TryAcquireHostLease(c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	}
 	if err != nil {
 		return err
 	}

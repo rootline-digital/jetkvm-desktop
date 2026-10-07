@@ -69,22 +69,22 @@ func TestControllerRefusesSecondLocalSession(t *testing.T) {
 	defer cancel()
 
 	dir := t.TempDir()
-	lockDirOverride = dir
-	t.Cleanup(func() { lockDirOverride = "" })
 
 	first := New(Config{
-		BaseURL:            srv.BaseURL(),
-		Password:           "secret",
-		RPCTimeout:         2 * time.Second,
-		Reconnect:          true,
-		LocalSessionClient: "jetkvm-mcp",
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-mcp",
+		LocalSessionLockDir: dir,
 	})
 	second := New(Config{
-		BaseURL:            srv.BaseURL(),
-		Password:           "secret",
-		RPCTimeout:         2 * time.Second,
-		Reconnect:          true,
-		LocalSessionClient: "jetkvm-desktop",
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: dir,
 	})
 	first.Start(ctx)
 	defer first.Stop()
