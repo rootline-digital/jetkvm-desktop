@@ -2,20 +2,10 @@
 
 package session
 
-import (
-	"os"
-
-	"golang.org/x/sys/windows"
-)
+import "os"
 
 func lockFileForTest(f *os.File) error {
-	ol := new(windows.Overlapped)
-	return windows.LockFileEx(
-		windows.Handle(f.Fd()),
-		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
-		0,
-		1,
-		0,
-		ol,
-	)
+	// Lock the same region production uses so the race test exercises the real
+	// mutual-exclusion protocol rather than a stale offset.
+	return lockFileExclusiveNB(f)
 }
