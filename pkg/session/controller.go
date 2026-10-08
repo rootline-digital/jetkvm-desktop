@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -27,15 +28,16 @@ import (
 type Phase uint8
 
 const (
-	PhaseIdle         Phase = iota // idle
-	PhaseConnecting                // connecting
-	PhaseConnected                 // connected
-	PhaseReconnecting              // reconnecting
-	PhaseDisconnected              // disconnected
-	PhaseAuthFailed                // auth_failed
-	PhaseOtherSession              // other_session
-	PhaseRebooting                 // rebooting
-	PhaseFatal                     // fatal_error
+	PhaseIdle                Phase = iota // idle
+	PhaseConnecting                       // connecting
+	PhaseConnected                        // connected
+	PhaseReconnecting                     // reconnecting
+	PhaseDisconnected                     // disconnected
+	PhaseAuthFailed                       // auth_failed
+	PhaseOtherSession                     // other_session
+	PhaseLocalSessionBlocked              // local_session_blocked
+	PhaseRebooting                        // rebooting
+	PhaseFatal                            // fatal_error
 )
 
 type Config struct {
@@ -46,6 +48,12 @@ type Config struct {
 	Reconnect       bool
 	ReconnectBase   time.Duration
 	ReconnectMax    time.Duration
+	// LocalSessionClient enables a host-scoped flock so jetkvm-desktop and
+	// jetkvm-mcp on the same machine do not fight for the single WebRTC slot.
+	LocalSessionClient string
+	// LocalSessionLockDir overrides where that flock lives; empty uses the
+	// per-user cache dir. Intended for tests that must not touch real state.
+	LocalSessionLockDir string
 }
 
 type Snapshot struct {
@@ -79,18 +87,27 @@ type Snapshot struct {
 type Controller struct {
 	cfg Config
 
-	mu        sync.RWMutex
-	snapshot  Snapshot
-	serialLog serialScrollback
-	current   *client.Client
-	runParent context.Context
-	cancelRun context.CancelFunc
-	running   bool
+	mu             sync.RWMutex
+	snapshot       Snapshot
+	serialLog      serialScrollback
+	current        *client.Client
+	runParent      context.Context
+	cancelRun      context.CancelFunc
+	running        bool
+	hostLease      *HostLease
+	skipLocalLease atomic.Bool
+	blockedWake    chan struct{}
 }
 
 const (
 	serialScrollbackMaxLines = 5000
 	serialScrollbackMaxBytes = 1 << 20
+
+	// Bounded retry windows for the host lease: adopting it after a takeover
+	// connect, and waiting out a holder that has not yet released it.
+	localLeaseAdoptAttempts = 6
+	localLeaseWaitBase      = 100 * time.Millisecond
+	localLeaseWaitMax       = 500 * time.Millisecond
 )
 
 type serialScrollback struct {
@@ -195,6 +212,7 @@ func (c *Controller) Start(parent context.Context) {
 	c.runParent = ctx
 	c.cancelRun = cancel
 	c.running = true
+	c.skipLocalLease.Store(false)
 	go c.run(ctx)
 }
 
@@ -210,6 +228,7 @@ func (c *Controller) Stop() {
 		_ = c.current.Close()
 		c.current = nil
 	}
+	c.releaseHostLeaseLocked()
 	c.mu.Unlock()
 }
 
@@ -239,20 +258,56 @@ func (c *Controller) LatestFrameInfo() (image.Image, time.Time) {
 	return current.LatestFrameInfo()
 }
 
+// ReconnectNow restarts a stalled session without skipping the local host
+// lease. Generic reconnect paths (toolbar, settings, virtual-media recovery)
+// must respect the lease so they cannot steal the WebRTC slot from MCP.
 func (c *Controller) ReconnectNow() {
+	c.reconnectNow(false)
+}
+
+// TakeoverNow restarts the session and skips the local host lease so an
+// explicit "Take Back Control" action can steal the WebRTC slot from another
+// local client.
+func (c *Controller) TakeoverNow() {
+	c.reconnectNow(true)
+}
+
+func (c *Controller) reconnectNow(skipLocalLease bool) {
 	c.mu.Lock()
 	current := c.current
 	parent := c.runParent
 	shouldStart := !c.running && c.cancelRun != nil && parent != nil
 	if shouldStart {
 		c.running = true
+		if skipLocalLease {
+			c.skipLocalLease.Store(true)
+		}
 	}
+	wake := c.blockedWake
 	c.mu.Unlock()
 	if current != nil {
 		_ = current.Close()
 	}
+	if skipLocalLease && wake != nil {
+		// A take-back-control while parked in the blocked phase: wake run()
+		// so it proceeds without the lease instead of waiting for the holder.
+		c.signalBlockedTakeover()
+	}
 	if shouldStart {
 		go c.run(parent)
+	}
+}
+
+// signalBlockedTakeover wakes a run parked in PhaseLocalSessionBlocked. The
+// channel is cleared under the mutex before closing so only one caller can
+// close it and no stale wake survives.
+func (c *Controller) signalBlockedTakeover() {
+	c.mu.Lock()
+	wake := c.blockedWake
+	c.blockedWake = nil
+	c.mu.Unlock()
+	if wake != nil {
+		close(wake)
 	}
 }
 
@@ -1853,10 +1908,20 @@ func (c *Controller) Stats() client.StatsSnapshot {
 
 func (c *Controller) run(ctx context.Context) {
 	defer func() {
+		c.releaseHostLease()
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
 	}()
+
+	if c.cfg.LocalSessionClient != "" {
+		if c.skipLocalLease.Load() {
+			c.skipLocalLease.Store(false)
+		} else if !c.acquireOrParkLocalLease(ctx) {
+			return
+		}
+	}
+
 	var attempt int
 	for {
 		select {
@@ -1915,6 +1980,7 @@ func (c *Controller) run(ctx context.Context) {
 		}
 
 		_ = c.bootstrap(ctx, cl)
+		c.adoptHostLeaseAfterConnect(ctx)
 		reason, stop := c.watch(ctx, cl)
 		if stop {
 			return
@@ -1922,6 +1988,7 @@ func (c *Controller) run(ctx context.Context) {
 
 		switch reason {
 		case "other_session":
+			c.releaseHostLease()
 			c.setState(func(s *Snapshot) {
 				s.Phase = PhaseOtherSession
 				s.Status = "another session took over"
@@ -2232,6 +2299,149 @@ func (c *Controller) mutateAndConfirm(mutate func(context.Context) error, confir
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *Controller) acquireHostLease() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hostLease != nil {
+		return nil
+	}
+	var (
+		lease *HostLease
+		err   error
+	)
+	if dir := c.cfg.LocalSessionLockDir; dir != "" {
+		lease, err = tryAcquireHostLease(dir, c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	} else {
+		lease, err = TryAcquireHostLease(c.cfg.BaseURL, c.cfg.LocalSessionClient)
+	}
+	if err != nil {
+		return err
+	}
+	c.hostLease = lease
+	return nil
+}
+
+// acquireOrParkLocalLease takes the host lease before connecting, or parks in
+// PhaseLocalSessionBlocked until the holder exits, an explicit takeover
+// interrupts, or ctx ends. It returns true when the run may proceed.
+func (c *Controller) acquireOrParkLocalLease(ctx context.Context) bool {
+	err := c.acquireHostLease()
+	if err == nil {
+		return true
+	}
+	var held *LocalSessionHeldError
+	if !errors.As(err, &held) {
+		c.setState(func(s *Snapshot) {
+			s.Phase = PhaseFatal
+			s.Status = "failed to acquire local session lock"
+			s.LastError = err.Error()
+			s.HIDReady = false
+			s.VideoReady = false
+		})
+		return false
+	}
+	c.setBlockedHeldState(err, held)
+	return c.parkBlockedLocalLease(ctx)
+}
+
+// parkBlockedLocalLease re-attempts the lease while blocked. It stops when
+// the holder exits, a takeover is requested, or ctx ends.
+func (c *Controller) parkBlockedLocalLease(ctx context.Context) bool {
+	c.mu.Lock()
+	wake := make(chan struct{})
+	c.blockedWake = wake
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.blockedWake == wake {
+			c.blockedWake = nil
+		}
+		c.mu.Unlock()
+	}()
+
+	for attempt := 0; ; attempt++ {
+		shift := attempt
+		if shift > 4 {
+			shift = 4
+		}
+		timer := time.NewTimer(backoff(shift, localLeaseWaitBase, localLeaseWaitMax))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-wake:
+			timer.Stop()
+			return true
+		case <-timer.C:
+		}
+
+		err := c.acquireHostLease()
+		if err == nil {
+			return true
+		}
+		var held *LocalSessionHeldError
+		if !errors.As(err, &held) {
+			c.setState(func(s *Snapshot) {
+				s.Phase = PhaseFatal
+				s.Status = "failed to acquire local session lock"
+				s.LastError = err.Error()
+				s.HIDReady = false
+				s.VideoReady = false
+			})
+			return false
+		}
+		c.setBlockedHeldState(err, held)
+	}
+}
+
+func (c *Controller) setBlockedHeldState(err error, held *LocalSessionHeldError) {
+	status := err.Error()
+	if held.Holder != "" {
+		status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
+	}
+	c.setState(func(s *Snapshot) {
+		s.Phase = PhaseLocalSessionBlocked
+		s.Status = status
+		s.LastError = err.Error()
+		s.HIDReady = false
+		s.VideoReady = false
+	})
+}
+
+// adoptHostLeaseAfterConnect takes the host lease after a takeover connect.
+// The displaced client may still be releasing its lock right after connect, so
+// retry through a short bounded window instead of discarding one failure —
+// otherwise the session stays connected while the lease is unheld and a local
+// contender can steal the session back.
+func (c *Controller) adoptHostLeaseAfterConnect(ctx context.Context) {
+	if c.cfg.LocalSessionClient == "" {
+		return
+	}
+	for attempt := 0; attempt < localLeaseAdoptAttempts; attempt++ {
+		err := c.acquireHostLease()
+		var held *LocalSessionHeldError
+		if err == nil || !errors.As(err, &held) {
+			return
+		}
+		if !sleepWithContext(ctx, backoff(attempt, localLeaseWaitBase, localLeaseWaitMax)) {
+			return
+		}
+	}
+}
+
+func (c *Controller) releaseHostLeaseLocked() {
+	if c.hostLease != nil {
+		_ = c.hostLease.Release()
+		c.hostLease = nil
+	}
+}
+
+func (c *Controller) releaseHostLease() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.releaseHostLeaseLocked()
 }
 
 func backoff(attempt int, base, max time.Duration) time.Duration {

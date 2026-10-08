@@ -187,8 +187,10 @@ jobs:
           # ROOT-3058/ROOT-3066: workstation MCP install path expects a jetkvm-mcp
           # binary. Extract the real MCP server built by CI rather than aliasing
           # the desktop GUI.
+          # The CI tarball is created with `tar -C dist/pkg -czf ... .`, so its
+          # members carry a `./` prefix; GNU tar does not match the bare name.
           tar -xzf "release/jetkvm-desktop-${RELEASE_TAG}-linux-amd64.tar.gz" \
-            -C release jetkvm-mcp
+            -C release ./jetkvm-mcp
           chmod +x "release/jetkvm-mcp"
           (cd release && sha256sum "${expected_assets[@]}" jetkvm-mcp >SHA256SUMS.txt)
 
