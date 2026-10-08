@@ -391,6 +391,13 @@ func (c *Controller) SetUSBEmulation(enabled bool) error {
 }
 
 func (c *Controller) SetATXPowerAction(action ATXPowerAction) error {
+	return c.SetATXPowerActionContext(context.Background(), action)
+}
+
+// SetATXPowerActionContext sends an ATX power action with a caller-supplied
+// context so MCP tool timeouts can bound the RPC rather than only the default
+// MutationTimeout.
+func (c *Controller) SetATXPowerActionContext(ctx context.Context, action ATXPowerAction) error {
 	if action == "" {
 		return errors.New("ATX power action is required")
 	}
@@ -398,7 +405,7 @@ func (c *Controller) SetATXPowerAction(action ATXPowerAction) error {
 	if current == nil {
 		return errors.New("client not connected")
 	}
-	return current.SetATXPowerAction(withTimeout(context.Background(), c.cfg.MutationTimeout), string(action))
+	return current.SetATXPowerAction(withTimeout(ctx, c.cfg.MutationTimeout), string(action))
 }
 
 func (c *Controller) SetActiveExtension(extensionID string) error {

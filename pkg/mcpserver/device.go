@@ -91,7 +91,7 @@ func (h *sessionHolder) setATXPower(ctx context.Context, action session.ATXPower
 	if err != nil {
 		return err
 	}
-	return ctrl.SetATXPowerAction(action)
+	return ctrl.SetATXPowerActionContext(ctx, action)
 }
 
 func (h *sessionHolder) getATXState(ctx context.Context) (*session.ATXState, error) {

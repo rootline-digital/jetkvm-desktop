@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -21,36 +20,24 @@ import (
 
 const defaultPasswordEnv = "JETKVM_PASSWORD"
 
-func readPassword(r io.Reader) (string, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return "", err
+// resolvePassword resolves the local-auth password from the environment only.
+// Reading passwords from stdin is intentionally unsupported: stdio is the MCP
+// JSON-RPC channel, and consuming it would block the server before it serves.
+func resolvePassword(passwordEnv string, getenv func(string) string) string {
+	if passwordEnv != "" {
+		return getenv(passwordEnv)
 	}
-	return strings.TrimRight(string(data), "\r\n"), nil
-}
-
-func resolvePassword(passwordFromStdin bool, passwordEnv string, stdin io.Reader, getenv func(string) string) (string, error) {
-	switch {
-	case passwordFromStdin && passwordEnv != "":
-		return "", errors.New("--password-stdin and --password-env cannot be used together")
-	case passwordFromStdin:
-		return readPassword(stdin)
-	case passwordEnv != "":
-		return getenv(passwordEnv), nil
-	default:
-		return getenv(defaultPasswordEnv), nil
-	}
+	return getenv(defaultPasswordEnv)
 }
 
 func main() {
 	var (
-		host             string
-		logLevel         string
-		passwordFromStdin bool
-		passwordEnv      string
-		rpcTimeout       time.Duration
-		toolTimeout      time.Duration
-		connectTimeout   time.Duration
+		host           string
+		logLevel       string
+		passwordEnv    string
+		rpcTimeout     time.Duration
+		toolTimeout    time.Duration
+		connectTimeout time.Duration
 	)
 
 	rootCmd := &cobra.Command{
@@ -66,10 +53,7 @@ func main() {
 				return errors.New("JetKVM host is required (--host or positional argument)")
 			}
 
-			password, err := resolvePassword(passwordFromStdin, passwordEnv, os.Stdin, os.Getenv)
-			if err != nil {
-				return fmt.Errorf("resolve password: %w", err)
-			}
+			password := resolvePassword(passwordEnv, os.Getenv)
 
 			if err := logging.Configure(logLevel); err != nil {
 				return err
@@ -92,7 +76,6 @@ func main() {
 	}
 
 	rootCmd.Flags().StringVar(&host, "host", "", "JetKVM base URL or hostname")
-	rootCmd.Flags().BoolVar(&passwordFromStdin, "password-stdin", false, "Read password for local auth from stdin")
 	rootCmd.Flags().StringVar(&passwordEnv, "password-env", "", fmt.Sprintf("Read password from env var (default fallback: %s)", defaultPasswordEnv))
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "", "Log level (error, warn, info, debug, trace)")
 	rootCmd.Flags().DurationVar(&rpcTimeout, "rpc-timeout", 5*time.Second, "Timeout for JetKVM JSON-RPC")

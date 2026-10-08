@@ -88,6 +88,21 @@ func TestMCPToolsPowerAndState(t *testing.T) {
 	if stateRes.IsError {
 		t.Fatalf("power_state tool error: %+v", stateRes.Content)
 	}
+	if stateRes.StructuredContent == nil {
+		t.Fatal("power_state returned no structured content")
+	}
+	state, ok := stateRes.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("power_state structured content = %T (%v), want map[string]any", stateRes.StructuredContent, stateRes.StructuredContent)
+	}
+	power, ok := state["power"].(bool)
+	if !ok || !power {
+		t.Fatalf("power_state power = %v (%T), want true", state["power"], state["power"])
+	}
+	hdd, ok := state["hdd"].(bool)
+	if !ok || hdd {
+		t.Fatalf("power_state hdd = %v (%T), want false", state["hdd"], state["hdd"])
+	}
 
 	powerRes, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "power",
