@@ -99,6 +99,109 @@ func TestControllerRefusesSecondLocalSession(t *testing.T) {
 	}
 }
 
+func TestControllerReconnectNowRespectsLocalLease(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	dir := t.TempDir()
+
+	first := New(Config{
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-mcp",
+		LocalSessionLockDir: dir,
+	})
+	second := New(Config{
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: dir,
+	})
+	first.Start(ctx)
+	defer first.Stop()
+	waitForPhase(t, first, PhaseConnected, 5*time.Second)
+
+	second.Start(ctx)
+	defer second.Stop()
+	waitForPhase(t, second, PhaseLocalSessionBlocked, 2*time.Second)
+
+	// A generic reconnect must keep respecting the lease; it must not steal
+	// the session from the local holder.
+	second.ReconnectNow()
+	assertPhaseHeldFor(t, second, PhaseLocalSessionBlocked, time.Second)
+	assertPhaseHeldFor(t, first, PhaseConnected, time.Second)
+}
+
+func TestControllerTakeoverNowSkipsLocalLease(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	dir := t.TempDir()
+
+	first := New(Config{
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-mcp",
+		LocalSessionLockDir: dir,
+	})
+	second := New(Config{
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: dir,
+	})
+	first.Start(ctx)
+	defer first.Stop()
+	waitForPhase(t, first, PhaseConnected, 5*time.Second)
+
+	second.Start(ctx)
+	defer second.Stop()
+	waitForPhase(t, second, PhaseLocalSessionBlocked, 2*time.Second)
+
+	// The explicit takeover is the one path allowed to skip the lease.
+	second.TakeoverNow()
+	waitForPhase(t, second, PhaseConnected, 5*time.Second)
+	waitForPhase(t, first, PhaseOtherSession, 5*time.Second)
+}
+
+func TestControllerLockFailureReportsFatalNotBlocked(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	controller := New(Config{
+		BaseURL:             srv.BaseURL(),
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: filepath.Join(file, "locks"),
+	})
+	controller.Start(ctx)
+	defer controller.Stop()
+
+	waitForPhase(t, controller, PhaseFatal, 2*time.Second)
+	snap := controller.Snapshot()
+	if snap.Status == "" {
+		t.Fatal("expected a status message for lock failure")
+	}
+	if snap.LastError == "" {
+		t.Fatal("expected last error for lock failure")
+	}
+}
+
 func TestControllerTransitionsToOtherSession(t *testing.T) {
 	srv, ctx, cancel := startEmulator(t)
 	defer cancel()
@@ -685,6 +788,17 @@ func waitForPhase(t *testing.T, controller *Controller, phase Phase, timeout tim
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for phase %v, got %+v", phase, controller.Snapshot())
+}
+
+func assertPhaseHeldFor(t *testing.T, controller *Controller, phase Phase, wait time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if got := controller.Snapshot().Phase; got != phase {
+			t.Fatalf("phase changed to %v, want it to stay %v", got, phase)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func waitForFrame(t *testing.T, controller *Controller, timeout time.Duration) {

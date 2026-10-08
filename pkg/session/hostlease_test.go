@@ -46,6 +46,42 @@ func TestHostLeaseDifferentHosts(t *testing.T) {
 	t.Cleanup(func() { _ = b.Release() })
 }
 
+func TestNormalizeLeaseHostCanonicalizesSchemeAndDefaultPort(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"http://JETKVM-MS01.example":         "jetkvm-ms01.example",
+		"https://jetkvm-ms01.example":        "jetkvm-ms01.example",
+		"jetkvm-ms01.example":                "jetkvm-ms01.example",
+		"http://jetkvm-ms01.example:80":      "jetkvm-ms01.example",
+		"https://jetkvm-ms01.example:443":    "jetkvm-ms01.example",
+		"http://jetkvm-ms01.example:8080":    "jetkvm-ms01.example:8080",
+		"JETKVM-MS01.EXAMPLE:8080":           "jetkvm-ms01.example:8080",
+		"https://jetkvm-ms01.example:8443/":  "jetkvm-ms01.example:8443",
+	}
+	for in, want := range cases {
+		if got := normalizeLeaseHost(in); got != want {
+			t.Errorf("normalizeLeaseHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestHostLeaseCanonicalizesEquivalentURLs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	first, err := tryAcquireHostLease(dir, "http://jetkvm-ms01.example", "jetkvm-mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Release() })
+
+	_, err = tryAcquireHostLease(dir, "JETKVM-MS01.example", "jetkvm-desktop")
+	var held *LocalSessionHeldError
+	if !errors.As(err, &held) {
+		t.Fatalf("expected LocalSessionHeldError for equivalent URL, got %v", err)
+	}
+}
+
 func TestHostLeaseReleaseKeepsPersistentLockfile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

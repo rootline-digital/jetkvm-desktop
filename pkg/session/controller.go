@@ -205,6 +205,7 @@ func (c *Controller) Start(parent context.Context) {
 	c.runParent = ctx
 	c.cancelRun = cancel
 	c.running = true
+	c.skipLocalLease.Store(false)
 	go c.run(ctx)
 }
 
@@ -250,14 +251,30 @@ func (c *Controller) LatestFrameInfo() (image.Image, time.Time) {
 	return current.LatestFrameInfo()
 }
 
+// ReconnectNow restarts a stalled session without skipping the local host
+// lease. Generic reconnect paths (toolbar, settings, virtual-media recovery)
+// must respect the lease so they cannot steal the WebRTC slot from MCP.
 func (c *Controller) ReconnectNow() {
-	c.skipLocalLease.Store(true)
+	c.reconnectNow(false)
+}
+
+// TakeoverNow restarts the session and skips the local host lease so an
+// explicit "Take Back Control" action can steal the WebRTC slot from another
+// local client.
+func (c *Controller) TakeoverNow() {
+	c.reconnectNow(true)
+}
+
+func (c *Controller) reconnectNow(skipLocalLease bool) {
 	c.mu.Lock()
 	current := c.current
 	parent := c.runParent
 	shouldStart := !c.running && c.cancelRun != nil && parent != nil
 	if shouldStart {
 		c.running = true
+		if skipLocalLease {
+			c.skipLocalLease.Store(true)
+		}
 	}
 	c.mu.Unlock()
 	if current != nil {
@@ -1876,17 +1893,27 @@ func (c *Controller) run(ctx context.Context) {
 			c.skipLocalLease.Store(false)
 		} else if err := c.acquireHostLease(); err != nil {
 			var held *LocalSessionHeldError
-			status := err.Error()
-			if errors.As(err, &held) && held.Holder != "" {
-				status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
+			if errors.As(err, &held) {
+				status := err.Error()
+				if held.Holder != "" {
+					status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
+				}
+				c.setState(func(s *Snapshot) {
+					s.Phase = PhaseLocalSessionBlocked
+					s.Status = status
+					s.LastError = err.Error()
+					s.HIDReady = false
+					s.VideoReady = false
+				})
+			} else {
+				c.setState(func(s *Snapshot) {
+					s.Phase = PhaseFatal
+					s.Status = "failed to acquire local session lock"
+					s.LastError = err.Error()
+					s.HIDReady = false
+					s.VideoReady = false
+				})
 			}
-			c.setState(func(s *Snapshot) {
-				s.Phase = PhaseLocalSessionBlocked
-				s.Status = status
-				s.LastError = err.Error()
-				s.HIDReady = false
-				s.VideoReady = false
-			})
 			return
 		}
 	}

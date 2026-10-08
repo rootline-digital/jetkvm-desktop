@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,10 +54,45 @@ func hostLeasePath(dir, baseURL string) string {
 	return filepath.Join(dir, name)
 }
 
+// normalizeLeaseHost canonicalizes a JetKVM base URL to host:port for the
+// lock key. The desktop client normalizes bare hosts to http:// while the MCP
+// passes --host verbatim, so the scheme is ignored and default ports are
+// dropped: http://host, https://host and bare host all serialize the same
+// device, and both clients share this exact function.
 func normalizeLeaseHost(baseURL string) string {
-	s := strings.TrimSpace(strings.ToLower(baseURL))
-	s = strings.TrimSuffix(s, "/")
-	return s
+	s := strings.TrimSpace(baseURL)
+	if s == "" {
+		return s
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Hostname() == "" {
+		// Fall back to a deterministic key so malformed input does not
+		// collapse onto the empty-string bucket.
+		return strings.ToLower(strings.Trim(strings.TrimSpace(s), "/"))
+	}
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == defaultLeasePort(u.Scheme) {
+		port = ""
+	}
+	if port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func defaultLeasePort(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http", "ws":
+		return "80"
+	case "https", "wss":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 // TryAcquireHostLease takes an exclusive non-blocking lock for baseURL,

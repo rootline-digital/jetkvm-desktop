@@ -3780,7 +3780,7 @@ func (a *App) drawOverlay(screen *ebiten.Image, snap session.Snapshot, hasVideo 
 		width:      min(420, float64(screen.Bounds().Dx()-52)),
 		onClick: func() {
 			a.releaseAllKeys(true)
-			a.ctrl.ReconnectNow()
+			a.ctrl.TakeoverNow()
 			a.revealUIFor(2 * time.Second)
 		},
 	})
