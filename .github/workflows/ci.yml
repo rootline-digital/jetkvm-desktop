@@ -86,6 +86,7 @@ jobs:
         run: |
           mkdir -p dist/pkg
           go build -trimpath -ldflags="-s -w" -o "dist/pkg/${{ matrix.client_bin }}" ./cmd/jetkvm-desktop
+          go build -trimpath -ldflags="-s -w" -o "dist/pkg/jetkvm-mcp" ./cmd/jetkvm-mcp
           cp README.md dist/pkg/
           tar -C dist/pkg -czf "dist/jetkvm-desktop-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" .
 
@@ -99,6 +100,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/pkg | Out-Null
           $env:CGO_LDFLAGS = "-static"
           go build -trimpath -ldflags='-s -w -extldflags "-static"' -o "dist/pkg/${{ matrix.client_bin }}" ./cmd/jetkvm-desktop
+          go build -trimpath -ldflags='-s -w -extldflags "-static"' -o "dist/pkg/jetkvm-mcp.exe" ./cmd/jetkvm-mcp
           Copy-Item README.md dist/pkg/README.md
           Compress-Archive -Path dist/pkg/* -DestinationPath "dist/jetkvm-desktop-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip"
 
