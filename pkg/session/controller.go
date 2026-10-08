@@ -28,16 +28,16 @@ import (
 type Phase uint8
 
 const (
-	PhaseIdle         Phase = iota // idle
-	PhaseConnecting                // connecting
-	PhaseConnected                 // connected
-	PhaseReconnecting              // reconnecting
-	PhaseDisconnected              // disconnected
-	PhaseAuthFailed                // auth_failed
-	PhaseOtherSession              // other_session
-	PhaseLocalSessionBlocked       // local_session_blocked
-	PhaseRebooting                 // rebooting
-	PhaseFatal                     // fatal_error
+	PhaseIdle                Phase = iota // idle
+	PhaseConnecting                       // connecting
+	PhaseConnected                        // connected
+	PhaseReconnecting                     // reconnecting
+	PhaseDisconnected                     // disconnected
+	PhaseAuthFailed                       // auth_failed
+	PhaseOtherSession                     // other_session
+	PhaseLocalSessionBlocked              // local_session_blocked
+	PhaseRebooting                        // rebooting
+	PhaseFatal                            // fatal_error
 )
 
 type Config struct {
@@ -87,14 +87,14 @@ type Snapshot struct {
 type Controller struct {
 	cfg Config
 
-	mu        sync.RWMutex
-	snapshot  Snapshot
-	serialLog serialScrollback
-	current   *client.Client
-	runParent context.Context
-	cancelRun context.CancelFunc
-	running   bool
-	hostLease *HostLease
+	mu             sync.RWMutex
+	snapshot       Snapshot
+	serialLog      serialScrollback
+	current        *client.Client
+	runParent      context.Context
+	cancelRun      context.CancelFunc
+	running        bool
+	hostLease      *HostLease
 	skipLocalLease atomic.Bool
 }
 

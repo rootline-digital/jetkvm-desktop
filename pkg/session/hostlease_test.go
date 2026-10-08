@@ -49,14 +49,14 @@ func TestHostLeaseDifferentHosts(t *testing.T) {
 func TestNormalizeLeaseHostCanonicalizesSchemeAndDefaultPort(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"http://JETKVM-MS01.example":         "jetkvm-ms01.example",
-		"https://jetkvm-ms01.example":        "jetkvm-ms01.example",
-		"jetkvm-ms01.example":                "jetkvm-ms01.example",
-		"http://jetkvm-ms01.example:80":      "jetkvm-ms01.example",
-		"https://jetkvm-ms01.example:443":    "jetkvm-ms01.example",
-		"http://jetkvm-ms01.example:8080":    "jetkvm-ms01.example:8080",
-		"JETKVM-MS01.EXAMPLE:8080":           "jetkvm-ms01.example:8080",
-		"https://jetkvm-ms01.example:8443/":  "jetkvm-ms01.example:8443",
+		"http://JETKVM-MS01.example":        "jetkvm-ms01.example",
+		"https://jetkvm-ms01.example":       "jetkvm-ms01.example",
+		"jetkvm-ms01.example":               "jetkvm-ms01.example",
+		"http://jetkvm-ms01.example:80":     "jetkvm-ms01.example",
+		"https://jetkvm-ms01.example:443":   "jetkvm-ms01.example",
+		"http://jetkvm-ms01.example:8080":   "jetkvm-ms01.example:8080",
+		"JETKVM-MS01.EXAMPLE:8080":          "jetkvm-ms01.example:8080",
+		"https://jetkvm-ms01.example:8443/": "jetkvm-ms01.example:8443",
 	}
 	for in, want := range cases {
 		if got := normalizeLeaseHost(in); got != want {
