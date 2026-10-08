@@ -96,11 +96,18 @@ type Controller struct {
 	running        bool
 	hostLease      *HostLease
 	skipLocalLease atomic.Bool
+	blockedWake    chan struct{}
 }
 
 const (
 	serialScrollbackMaxLines = 5000
 	serialScrollbackMaxBytes = 1 << 20
+
+	// Bounded retry windows for the host lease: adopting it after a takeover
+	// connect, and waiting out a holder that has not yet released it.
+	localLeaseAdoptAttempts = 6
+	localLeaseWaitBase      = 100 * time.Millisecond
+	localLeaseWaitMax       = 500 * time.Millisecond
 )
 
 type serialScrollback struct {
@@ -276,12 +283,31 @@ func (c *Controller) reconnectNow(skipLocalLease bool) {
 			c.skipLocalLease.Store(true)
 		}
 	}
+	wake := c.blockedWake
 	c.mu.Unlock()
 	if current != nil {
 		_ = current.Close()
 	}
+	if skipLocalLease && wake != nil {
+		// A take-back-control while parked in the blocked phase: wake run()
+		// so it proceeds without the lease instead of waiting for the holder.
+		c.signalBlockedTakeover()
+	}
 	if shouldStart {
 		go c.run(parent)
+	}
+}
+
+// signalBlockedTakeover wakes a run parked in PhaseLocalSessionBlocked. The
+// channel is cleared under the mutex before closing so only one caller can
+// close it and no stale wake survives.
+func (c *Controller) signalBlockedTakeover() {
+	c.mu.Lock()
+	wake := c.blockedWake
+	c.blockedWake = nil
+	c.mu.Unlock()
+	if wake != nil {
+		close(wake)
 	}
 }
 
@@ -1891,29 +1917,7 @@ func (c *Controller) run(ctx context.Context) {
 	if c.cfg.LocalSessionClient != "" {
 		if c.skipLocalLease.Load() {
 			c.skipLocalLease.Store(false)
-		} else if err := c.acquireHostLease(); err != nil {
-			var held *LocalSessionHeldError
-			if errors.As(err, &held) {
-				status := err.Error()
-				if held.Holder != "" {
-					status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
-				}
-				c.setState(func(s *Snapshot) {
-					s.Phase = PhaseLocalSessionBlocked
-					s.Status = status
-					s.LastError = err.Error()
-					s.HIDReady = false
-					s.VideoReady = false
-				})
-			} else {
-				c.setState(func(s *Snapshot) {
-					s.Phase = PhaseFatal
-					s.Status = "failed to acquire local session lock"
-					s.LastError = err.Error()
-					s.HIDReady = false
-					s.VideoReady = false
-				})
-			}
+		} else if !c.acquireOrParkLocalLease(ctx) {
 			return
 		}
 	}
@@ -1976,7 +1980,7 @@ func (c *Controller) run(ctx context.Context) {
 		}
 
 		_ = c.bootstrap(ctx, cl)
-		c.adoptHostLeaseAfterConnect()
+		c.adoptHostLeaseAfterConnect(ctx)
 		reason, stop := c.watch(ctx, cl)
 		if stop {
 			return
@@ -2319,11 +2323,112 @@ func (c *Controller) acquireHostLease() error {
 	return nil
 }
 
-func (c *Controller) adoptHostLeaseAfterConnect() {
+// acquireOrParkLocalLease takes the host lease before connecting, or parks in
+// PhaseLocalSessionBlocked until the holder exits, an explicit takeover
+// interrupts, or ctx ends. It returns true when the run may proceed.
+func (c *Controller) acquireOrParkLocalLease(ctx context.Context) bool {
+	err := c.acquireHostLease()
+	if err == nil {
+		return true
+	}
+	var held *LocalSessionHeldError
+	if !errors.As(err, &held) {
+		c.setState(func(s *Snapshot) {
+			s.Phase = PhaseFatal
+			s.Status = "failed to acquire local session lock"
+			s.LastError = err.Error()
+			s.HIDReady = false
+			s.VideoReady = false
+		})
+		return false
+	}
+	c.setBlockedHeldState(err, held)
+	return c.parkBlockedLocalLease(ctx)
+}
+
+// parkBlockedLocalLease re-attempts the lease while blocked. It stops when
+// the holder exits, a takeover is requested, or ctx ends.
+func (c *Controller) parkBlockedLocalLease(ctx context.Context) bool {
+	c.mu.Lock()
+	wake := make(chan struct{})
+	c.blockedWake = wake
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.blockedWake == wake {
+			c.blockedWake = nil
+		}
+		c.mu.Unlock()
+	}()
+
+	for attempt := 0; ; attempt++ {
+		shift := attempt
+		if shift > 4 {
+			shift = 4
+		}
+		timer := time.NewTimer(backoff(shift, localLeaseWaitBase, localLeaseWaitMax))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-wake:
+			timer.Stop()
+			return true
+		case <-timer.C:
+		}
+
+		err := c.acquireHostLease()
+		if err == nil {
+			return true
+		}
+		var held *LocalSessionHeldError
+		if !errors.As(err, &held) {
+			c.setState(func(s *Snapshot) {
+				s.Phase = PhaseFatal
+				s.Status = "failed to acquire local session lock"
+				s.LastError = err.Error()
+				s.HIDReady = false
+				s.VideoReady = false
+			})
+			return false
+		}
+		c.setBlockedHeldState(err, held)
+	}
+}
+
+func (c *Controller) setBlockedHeldState(err error, held *LocalSessionHeldError) {
+	status := err.Error()
+	if held.Holder != "" {
+		status = fmt.Sprintf("local WebRTC session held by %s", held.Holder)
+	}
+	c.setState(func(s *Snapshot) {
+		s.Phase = PhaseLocalSessionBlocked
+		s.Status = status
+		s.LastError = err.Error()
+		s.HIDReady = false
+		s.VideoReady = false
+	})
+}
+
+// adoptHostLeaseAfterConnect takes the host lease after a takeover connect.
+// The displaced client may still be releasing its lock right after connect, so
+// retry through a short bounded window instead of discarding one failure —
+// otherwise the session stays connected while the lease is unheld and a local
+// contender can steal the session back.
+func (c *Controller) adoptHostLeaseAfterConnect(ctx context.Context) {
 	if c.cfg.LocalSessionClient == "" {
 		return
 	}
-	_ = c.acquireHostLease()
+	for attempt := 0; attempt < localLeaseAdoptAttempts; attempt++ {
+		err := c.acquireHostLease()
+		var held *LocalSessionHeldError
+		if err == nil || !errors.As(err, &held) {
+			return
+		}
+		if !sleepWithContext(ctx, backoff(attempt, localLeaseWaitBase, localLeaseWaitMax)) {
+			return
+		}
+	}
 }
 
 func (c *Controller) releaseHostLeaseLocked() {

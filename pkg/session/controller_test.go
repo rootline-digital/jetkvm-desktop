@@ -172,6 +172,86 @@ func TestControllerTakeoverNowSkipsLocalLease(t *testing.T) {
 	waitForPhase(t, first, PhaseOtherSession, 5*time.Second)
 }
 
+func TestControllerTakeoverAdoptsLeaseAfterHolderExits(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	dir := t.TempDir()
+	baseURL := srv.BaseURL()
+
+	// Hold the lease out-of-band, simulating a displaced jetkvm-mcp that is
+	// slow to notice it lost the WebRTC slot.
+	holder, err := tryAcquireHostLease(dir, baseURL, "jetkvm-mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := New(Config{
+		BaseURL:             baseURL,
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: dir,
+	})
+	second.Start(ctx)
+	defer second.Stop()
+	waitForPhase(t, second, PhaseLocalSessionBlocked, 2*time.Second)
+
+	// Explicit takeover connects without the lease; adoption must retry and
+	// win the lease once the displaced holder finally releases it.
+	second.TakeoverNow()
+	waitForPhase(t, second, PhaseConnected, 5*time.Second)
+
+	// Give the adopt path a moment to fail its first attempt while the holder
+	// is still present, then release it and wait for retry to acquire.
+	time.Sleep(200 * time.Millisecond)
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	leasePath := hostLeasePath(dir, baseURL)
+	deadline := time.Now().Add(2 * time.Second)
+	for readLeaseHolder(leasePath) != "jetkvm-desktop" && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := readLeaseHolder(leasePath); got != "jetkvm-desktop" {
+		t.Fatalf("holder record = %q, want jetkvm-desktop (takeover winner must adopt the lease)", got)
+	}
+}
+
+func TestControllerBlockedRecoversWhenHolderExits(t *testing.T) {
+	srv, ctx, cancel := startEmulator(t)
+	defer cancel()
+
+	dir := t.TempDir()
+	baseURL := srv.BaseURL()
+
+	holder, err := tryAcquireHostLease(dir, baseURL, "jetkvm-mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controller := New(Config{
+		BaseURL:             baseURL,
+		Password:            "secret",
+		RPCTimeout:          2 * time.Second,
+		Reconnect:           true,
+		LocalSessionClient:  "jetkvm-desktop",
+		LocalSessionLockDir: dir,
+	})
+	controller.Start(ctx)
+	defer controller.Stop()
+	waitForPhase(t, controller, PhaseLocalSessionBlocked, 2*time.Second)
+
+	// The blocked phase must not be terminal: once the holder exits and the
+	// kernel flock is released, the parked controller should acquire and connect.
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPhase(t, controller, PhaseConnected, 5*time.Second)
+}
+
 func TestControllerLockFailureReportsFatalNotBlocked(t *testing.T) {
 	srv, ctx, cancel := startEmulator(t)
 	defer cancel()
