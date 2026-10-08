@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -43,4 +44,29 @@ func TestHostLeaseDifferentHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = b.Release() })
+}
+
+func TestHostLeaseReleaseKeepsPersistentLockfile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	lease, err := tryAcquireHostLease(dir, "https://release.example", "jetkvm-mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lockfile is persistent; only the OS lock is dropped on Release.
+	// Unlinking here would let a released holder delete a live successor's lock.
+	if _, err := os.Stat(lease.path); err != nil {
+		t.Fatalf("Release removed the lockfile: %v", err)
+	}
+
+	next, err := tryAcquireHostLease(dir, "https://release.example", "jetkvm-desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Release() })
 }

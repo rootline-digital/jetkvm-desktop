@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -30,10 +29,13 @@ func (e *LocalSessionHeldError) Is(target error) bool {
 }
 
 // HostLease serializes WebRTC connects to one JetKVM host per machine.
+//
+// The lease is an OS advisory lock held on a persistent lockfile. The lockfile
+// is never unlinked: the kernel releases the lock when the owning process dies,
+// so stale-file recovery is unnecessary and cannot race with acquisition.
 type HostLease struct {
-	path   string
-	file   *os.File
-	client string
+	path string
+	file *os.File
 }
 
 func localSessionLockDir() (string, error) {
@@ -79,45 +81,36 @@ func tryAcquireHostLease(dir, baseURL, clientName string) (*HostLease, error) {
 		return nil, err
 	}
 
-	const attempts = 2
-	for i := 0; i < attempts; i++ {
-		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			payload := fmt.Sprintf("%s=%d\n", clientName, os.Getpid())
-			if _, err := f.WriteString(payload); err != nil {
-				_ = f.Close()
-				_ = os.Remove(path)
-				return nil, err
-			}
-			return &HostLease{path: path, file: f, client: clientName}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		holder, pid := readLeaseRecord(path)
-		if pid > 0 && processAlive(pid) {
-			return nil, &LocalSessionHeldError{Holder: holder}
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-	}
-	return nil, &LocalSessionHeldError{Holder: readLeaseHolder(path)}
-}
-
-func readLeaseRecord(path string) (holder string, pid int) {
-	holder = readLeaseHolder(path)
-	data, err := os.ReadFile(path)
+	// Keep the lockfile in place for the lifetime of the machine model: the
+	// lock is the OS flock, not the file's existence. Never O_EXCL+unlink here.
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return holder, 0
+		return nil, err
 	}
-	line := strings.TrimSpace(string(data))
-	if i := strings.LastIndexByte(line, '='); i > 0 {
-		if p, err := strconv.Atoi(strings.TrimSpace(line[i+1:])); err == nil {
-			pid = p
+
+	if err := lockFileExclusiveNB(f); err != nil {
+		_ = f.Close()
+		if errors.Is(err, errLocked) {
+			return nil, &LocalSessionHeldError{Holder: readLeaseHolder(path)}
 		}
+		return nil, err
 	}
-	return holder, pid
+
+	// Record the holder for the contender's error message. Best effort only:
+	// the record is a human-readable hint, not part of the mutual-exclusion
+	// protocol, so a contender reading during this tiny window reports an empty
+	// holder rather than a wrong one.
+	if err := f.Truncate(0); err != nil {
+		_ = unlockFile(f)
+		_ = f.Close()
+		return nil, err
+	}
+	if _, err := f.WriteString(clientName + "\n"); err != nil {
+		_ = unlockFile(f)
+		_ = f.Close()
+		return nil, err
+	}
+	return &HostLease{path: path, file: f}, nil
 }
 
 func readLeaseHolder(path string) string {
@@ -129,25 +122,20 @@ func readLeaseHolder(path string) string {
 	if line == "" {
 		return ""
 	}
-	if i := strings.IndexByte(line, '='); i > 0 {
-		return strings.TrimSpace(line[:i])
-	}
 	return line
 }
 
-// Release drops the host lease.
+// Release drops the host lease. It never unlinks the lockfile: unlinking would
+// let a released holder delete a lockfile that a successor has already locked.
 func (h *HostLease) Release() error {
 	if h == nil || h.file == nil {
 		return nil
 	}
-	errClose := h.file.Close()
+	f := h.file
 	h.file = nil
-	errRemove := os.Remove(h.path)
-	if errClose != nil {
-		return errClose
+	if err := unlockFile(f); err != nil {
+		_ = f.Close()
+		return err
 	}
-	if errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
-		return errRemove
-	}
-	return nil
+	return f.Close()
 }
